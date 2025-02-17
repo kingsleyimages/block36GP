@@ -1,9 +1,13 @@
 const pg = require('pg');
-const client = new pg.Client(process.env.DATABASE_URL || 'postgres://localhost/acme_talent_agency_db');
+// require the jsonwebtoken package
+const jwt = require('jsonwebtoken');
+// pull secret from environment variable or use default
+const secret = process.env.JWT || 'shhh';
+const client = new pg.Client();
 const uuid = require('uuid');
 const bcrypt = require('bcrypt');
 
-const createTables = async()=> {
+const createTables = async () => {
   const SQL = `
     DROP TABLE IF EXISTS user_skills;
     DROP TABLE IF EXISTS users;
@@ -25,49 +29,63 @@ const createTables = async()=> {
     );
   `;
   await client.query(SQL);
-
 };
 
-const createUser = async({ username, password })=> {
+const createUser = async ({ username, password }) => {
   const SQL = `
     INSERT INTO users(id, username, password) VALUES($1, $2, $3) RETURNING *
   `;
-  const response = await client.query(SQL, [ uuid.v4(), username, await bcrypt.hash(password, 5)]);
+  const response = await client.query(SQL, [
+    uuid.v4(),
+    username,
+    await bcrypt.hash(password, 5),
+  ]);
   return response.rows[0];
 };
 
-const createSkill = async({ name })=> {
+const createSkill = async ({ name }) => {
   const SQL = `
     INSERT INTO skills(id, name) VALUES ($1, $2) RETURNING * 
   `;
-  const response = await client.query(SQL, [ uuid.v4(), name]);
+  const response = await client.query(SQL, [uuid.v4(), name]);
   return response.rows[0];
 };
 
-const authenticate = async({ username, password })=> {
+const authenticate = async ({ username, password }) => {
   const SQL = `
-    SELECT id
+    SELECT id, password
     FROM users
     WHERE username = $1
   `;
-  const response = await client.query(SQL, [ username ]);
-  if(!response.rows.length){
+  const response = await client.query(SQL, [username]);
+  // add in password check
+  // use bcrypt compare against plain text password vs hashed password in data base
+  if (
+    // look to see if the response is empty or if the password does not match
+    !response.rows.length ||
+    (await bcrypt.compare(password, response.rows[0].password)) === false
+  ) {
+    // if no user or password does not match
     const error = Error('not authorized');
     error.status = 401;
     throw error;
   }
-  return { token: response.rows[0].id };
+  // if user and password match
+  // return the token jwt.sign is the function that creates the token and takes two arguments the payload and the secret
+  const token = await jwt.sign({ id: response.rows[0].id }, secret);
+  console.log('Token:', token);
+  return { token };
 };
 
-const createUserSkill = async({ user_id, skill_id })=> {
+const createUserSkill = async ({ user_id, skill_id }) => {
   const SQL = `
     INSERT INTO user_skills(id, user_id, skill_id) VALUES ($1, $2, $3) RETURNING * 
   `;
-  const response = await client.query(SQL, [ uuid.v4(), user_id, skill_id]);
+  const response = await client.query(SQL, [uuid.v4(), user_id, skill_id]);
   return response.rows[0];
 };
 
-const fetchUsers = async()=> {
+const fetchUsers = async () => {
   const SQL = `
     SELECT id, username 
     FROM users
@@ -76,7 +94,7 @@ const fetchUsers = async()=> {
   return response.rows;
 };
 
-const fetchSkills = async()=> {
+const fetchSkills = async () => {
   const SQL = `
     SELECT *
     FROM skills
@@ -85,40 +103,52 @@ const fetchSkills = async()=> {
   return response.rows;
 };
 
-const fetchUserSkills = async(user_id)=> {
+const fetchUserSkills = async (user_id) => {
   const SQL = `
     SELECT *
     FROM user_skills
     WHERE user_id = $1
   `;
-  const response = await client.query(SQL, [ user_id ]);
+  const response = await client.query(SQL, [user_id]);
   return response.rows;
 };
 
-const deleteUserSkill = async({user_id, id})=> {
+const deleteUserSkill = async ({ user_id, id }) => {
   const SQL = `
     DELETE
     FROM user_skills
     WHERE user_id = $1 AND id = $2
   `;
-  await client.query(SQL, [ user_id, id ]);
+  await client.query(SQL, [user_id, id]);
 };
 
-const findUserByToken = async(token) => {
+const findUserByToken = async (token) => {
+  console.log("TOKEN, ", token);
+  let id;
+  try {
+    // backend is verifying the token by desconstructing the token with the secret: if theres and error it throws an error
+    const payload = jwt.verify(token, secret);
+    // if no errror get the id from the payload and set it to the id variable which will be used to query the database
+    id = payload.id;
+  } catch (error) {
+    const err = Error('not authorized');
+    err.status = 401;
+    throw err;
+  }
+  // if the token is verified then it will return the user id
   const SQL = `
     SELECT id, username
     FROM users
     WHERE id = $1
   `;
-  const response = await client.query(SQL, [token]);
-  if(!response.rows.length){
+  const response = await client.query(SQL, [id]);
+  if (!response.rows.length) {
     const error = Error('not authorized');
     error.status = 401;
     throw error;
   }
   return response.rows[0];
-
-}
+};
 
 module.exports = {
   client,
@@ -131,5 +161,5 @@ module.exports = {
   fetchUserSkills,
   deleteUserSkill,
   authenticate,
-  findUserByToken
+  findUserByToken,
 };
